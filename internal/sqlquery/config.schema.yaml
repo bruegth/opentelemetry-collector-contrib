@@ -60,6 +60,8 @@ $defs:
         type: string
       monotonic:
         type: boolean
+      row_condition:
+        $ref: row_condition
       start_ts_column:
         type: string
       static_attributes:
@@ -74,6 +76,13 @@ $defs:
         type: string
       value_type:
         $ref: metric_value_type
+  row_condition:
+    type: object
+    properties:
+      column:
+        type: string
+      value:
+        type: string
   metric_type:
     type: string
   metric_value_type:

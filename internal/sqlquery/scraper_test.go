@@ -529,6 +529,121 @@ func TestScraper_StartAndTS_ErrorOnParse(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestScraper_RowCondition_FiltersRows(t *testing.T) {
+	// Simulate a pivot-style result set like pgbouncer's SHOW LISTS:
+	//   list      | items
+	//   ----------+------
+	//   databases |     8
+	//   pools     |     4
+	//   users     |     2
+	client := &FakeDBClient{
+		StringMaps: [][]StringMap{{
+			{"list": "databases", "items": "8"},
+			{"list": "pools", "items": "4"},
+			{"list": "users", "items": "2"},
+		}},
+	}
+	scrpr := Scraper{
+		InstrumentationScope: pcommon.NewInstrumentationScope(),
+		Client:               client,
+		Query: Query{
+			Metrics: []MetricCfg{
+				{
+					MetricName:  "pgbouncer.lists.pools",
+					ValueColumn: "items",
+					ValueType:   MetricValueTypeInt,
+					DataType:    MetricTypeGauge,
+					RowCondition: &RowCondition{
+						Column: "list",
+						Value:  "pools",
+					},
+				},
+				{
+					MetricName:  "pgbouncer.lists.databases",
+					ValueColumn: "items",
+					ValueType:   MetricValueTypeInt,
+					DataType:    MetricTypeGauge,
+					RowCondition: &RowCondition{
+						Column: "list",
+						Value:  "databases",
+					},
+				},
+			},
+		},
+	}
+	metrics, err := scrpr.ScrapeMetrics(t.Context())
+	require.NoError(t, err)
+	ms := metrics.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	require.Equal(t, 2, ms.Len())
+
+	poolsMetric := ms.At(0)
+	assert.Equal(t, "pgbouncer.lists.pools", poolsMetric.Name())
+	assert.Equal(t, 1, poolsMetric.Gauge().DataPoints().Len())
+	assert.EqualValues(t, 4, poolsMetric.Gauge().DataPoints().At(0).IntValue())
+
+	dbMetric := ms.At(1)
+	assert.Equal(t, "pgbouncer.lists.databases", dbMetric.Name())
+	assert.Equal(t, 1, dbMetric.Gauge().DataPoints().Len())
+	assert.EqualValues(t, 8, dbMetric.Gauge().DataPoints().At(0).IntValue())
+}
+
+func TestScraper_RowCondition_NoMatch_ProducesNoDataPoints(t *testing.T) {
+	client := &FakeDBClient{
+		StringMaps: [][]StringMap{{
+			{"list": "databases", "items": "8"},
+			{"list": "pools", "items": "4"},
+		}},
+	}
+	scrpr := Scraper{
+		InstrumentationScope: pcommon.NewInstrumentationScope(),
+		Client:               client,
+		Query: Query{
+			Metrics: []MetricCfg{{
+				MetricName:  "pgbouncer.lists.peers",
+				ValueColumn: "items",
+				ValueType:   MetricValueTypeInt,
+				DataType:    MetricTypeGauge,
+				RowCondition: &RowCondition{
+					Column: "list",
+					Value:  "peers", // no matching row
+				},
+			}},
+		},
+	}
+	metrics, err := scrpr.ScrapeMetrics(t.Context())
+	require.NoError(t, err)
+	ms := metrics.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	// No rows matched: no metric is emitted.
+	assert.Equal(t, 0, ms.Len())
+}
+
+func TestScraper_RowCondition_NilCondition_AllRowsUsed(t *testing.T) {
+	// When RowCondition is nil, all rows are used (backward-compatible behaviour).
+	client := &FakeDBClient{
+		StringMaps: [][]StringMap{{
+			{"count": "1"},
+			{"count": "2"},
+		}},
+	}
+	scrpr := Scraper{
+		InstrumentationScope: pcommon.NewInstrumentationScope(),
+		Client:               client,
+		Query: Query{
+			Metrics: []MetricCfg{{
+				MetricName:   "my.count",
+				ValueColumn:  "count",
+				ValueType:    MetricValueTypeInt,
+				DataType:     MetricTypeGauge,
+				RowCondition: nil,
+			}},
+		},
+	}
+	metrics, err := scrpr.ScrapeMetrics(t.Context())
+	require.NoError(t, err)
+	ms := metrics.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	assert.Equal(t, 2, ms.Len())
+}
+
 func TestBuildDataSourceString(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
