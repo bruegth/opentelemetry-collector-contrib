@@ -530,12 +530,6 @@ func TestScraper_StartAndTS_ErrorOnParse(t *testing.T) {
 }
 
 func TestScraper_RowCondition_FiltersRows(t *testing.T) {
-	// Simulate a pivot-style result set like pgbouncer's SHOW LISTS:
-	//   list      | items
-	//   ----------+------
-	//   databases |     8
-	//   pools     |     4
-	//   users     |     2
 	client := &FakeDBClient{
 		StringMaps: [][]StringMap{{
 			{"list": "databases", "items": "8"},
@@ -605,7 +599,7 @@ func TestScraper_RowCondition_NoMatch_ProducesNoDataPoints(t *testing.T) {
 				DataType:    MetricTypeGauge,
 				RowCondition: &RowCondition{
 					Column: "list",
-					Value:  "peers", // no matching row
+					Value:  "peers",
 				},
 			}},
 		},
@@ -613,12 +607,11 @@ func TestScraper_RowCondition_NoMatch_ProducesNoDataPoints(t *testing.T) {
 	metrics, err := scrpr.ScrapeMetrics(t.Context())
 	require.NoError(t, err)
 	ms := metrics.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
-	// No rows matched: no metric is emitted.
+
 	assert.Equal(t, 0, ms.Len())
 }
 
 func TestScraper_RowCondition_NilCondition_AllRowsUsed(t *testing.T) {
-	// When RowCondition is nil, all rows are used (backward-compatible behaviour).
 	client := &FakeDBClient{
 		StringMaps: [][]StringMap{{
 			{"count": "1"},
