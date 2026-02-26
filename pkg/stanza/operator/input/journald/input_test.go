@@ -75,10 +75,10 @@ func (*fakeJournaldCmdJSONSeqWithNewline) StdoutPipe() (io.ReadCloser, error) {
 	// First record: a JSON entry where the _SELINUX_CONTEXT field contains a
 	// literal (unescaped) newline byte, as can happen with some journald versions.
 	// With newline-based reading this would be split into two unparseable fragments.
-	// With RS-based reading the full record is read as one unit; parsing still fails
-	// because the JSON is technically invalid, so a warning is logged and the entry
-	// is skipped. The second valid record must still be received.
-	invalidEntry := "\x1e{ \"_SELINUX_CONTEXT\": \"unconfined\n\", \"__REALTIME_TIMESTAMP\": \"1587047866229555\", \"__CURSOR\": \"cursor-invalid\" }\n"
+	// With RS-based reading the full record is read as one unit. The JSON is
+	// structurally incomplete (no closing brace), so parsing fails and a warning
+	// is logged. The second valid record must still be received.
+	invalidEntry := "\x1e{ \"_SELINUX_CONTEXT\": \"unconfined\n\"\n"
 	// Second record: a well-formed json-seq entry.
 	validEntry := "\x1e" + journaldTestResponse
 	reader := bytes.NewReader([]byte(invalidEntry + validEntry))
