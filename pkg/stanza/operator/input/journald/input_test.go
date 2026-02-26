@@ -25,6 +25,9 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/stanza/testutil"
 )
 
+const journaldTestResponse = `{ "_BOOT_ID": "c4fa36de06824d21835c05ff80c54468", "_CAP_EFFECTIVE": "0", "_TRANSPORT": "journal", "_UID": "1000", "_EXE": "/usr/lib/systemd/systemd", "_AUDIT_LOGINUID": "1000", "MESSAGE": "run-docker-netns-4f76d707d45f.mount: Succeeded.", "_PID": "13894", "_CMDLINE": "/lib/systemd/systemd --user", "_MACHINE_ID": "d777d00e7caf45fbadedceba3975520d", "_SELINUX_CONTEXT": "unconfined\n", "CODE_FUNC": "unit_log_success", "SYSLOG_IDENTIFIER": "systemd", "_HOSTNAME": "myhostname", "MESSAGE_ID": "7ad2d189f7e94e70a38c781354912448", "_SYSTEMD_CGROUP": "/user.slice/user-1000.slice/user@1000.service/init.scope", "_SOURCE_REALTIME_TIMESTAMP": "1587047866229317", "USER_UNIT": "run-docker-netns-4f76d707d45f.mount", "SYSLOG_FACILITY": "3", "_SYSTEMD_SLICE": "user-1000.slice", "_AUDIT_SESSION": "286", "CODE_FILE": "../src/core/unit.c", "_SYSTEMD_USER_UNIT": "init.scope", "_COMM": "systemd", "USER_INVOCATION_ID": "88f7ca6bbf244dc8828fa901f9fe9be1", "CODE_LINE": "5487", "_SYSTEMD_INVOCATION_ID": "83f7fc7799064520b26eb6de1630429c", "PRIORITY": "6", "_GID": "1000", "__REALTIME_TIMESTAMP": "1587047866229555", "_SYSTEMD_UNIT": "user@1000.service", "_SYSTEMD_USER_SLICE": "-.slice", "__CURSOR": "s=b1e713b587ae4001a9ca482c4b12c005;i=1eed30;b=c4fa36de06824d21835c05ff80c54468;m=9f9d630205;t=5a369604ee333;x=16c2d4fd4fdb7c36", "__MONOTONIC_TIMESTAMP": "685540311557", "_SYSTEMD_OWNER_UID": "1000" }
+`
+
 type fakeJournaldCmd struct {
 	startError error
 	exitError  *exec.ExitError
@@ -36,9 +39,7 @@ func (f *fakeJournaldCmd) Start() error {
 }
 
 func (*fakeJournaldCmd) StdoutPipe() (io.ReadCloser, error) {
-	response := `{ "_BOOT_ID": "c4fa36de06824d21835c05ff80c54468", "_CAP_EFFECTIVE": "0", "_TRANSPORT": "journal", "_UID": "1000", "_EXE": "/usr/lib/systemd/systemd", "_AUDIT_LOGINUID": "1000", "MESSAGE": "run-docker-netns-4f76d707d45f.mount: Succeeded.", "_PID": "13894", "_CMDLINE": "/lib/systemd/systemd --user", "_MACHINE_ID": "d777d00e7caf45fbadedceba3975520d", "_SELINUX_CONTEXT": "unconfined\n", "CODE_FUNC": "unit_log_success", "SYSLOG_IDENTIFIER": "systemd", "_HOSTNAME": "myhostname", "MESSAGE_ID": "7ad2d189f7e94e70a38c781354912448", "_SYSTEMD_CGROUP": "/user.slice/user-1000.slice/user@1000.service/init.scope", "_SOURCE_REALTIME_TIMESTAMP": "1587047866229317", "USER_UNIT": "run-docker-netns-4f76d707d45f.mount", "SYSLOG_FACILITY": "3", "_SYSTEMD_SLICE": "user-1000.slice", "_AUDIT_SESSION": "286", "CODE_FILE": "../src/core/unit.c", "_SYSTEMD_USER_UNIT": "init.scope", "_COMM": "systemd", "USER_INVOCATION_ID": "88f7ca6bbf244dc8828fa901f9fe9be1", "CODE_LINE": "5487", "_SYSTEMD_INVOCATION_ID": "83f7fc7799064520b26eb6de1630429c", "PRIORITY": "6", "_GID": "1000", "__REALTIME_TIMESTAMP": "1587047866229555", "_SYSTEMD_UNIT": "user@1000.service", "_SYSTEMD_USER_SLICE": "-.slice", "__CURSOR": "s=b1e713b587ae4001a9ca482c4b12c005;i=1eed30;b=c4fa36de06824d21835c05ff80c54468;m=9f9d630205;t=5a369604ee333;x=16c2d4fd4fdb7c36", "__MONOTONIC_TIMESTAMP": "685540311557", "_SYSTEMD_OWNER_UID": "1000" }
-`
-	reader := bytes.NewReader([]byte(response))
+	reader := bytes.NewReader([]byte(journaldTestResponse))
 	return io.NopCloser(reader), nil
 }
 
@@ -53,6 +54,50 @@ func (f *fakeJournaldCmd) Wait() error {
 	}
 
 	return f.exitError
+}
+
+type fakeJournaldCmdJSONSeq struct {
+	fakeJournaldCmd
+}
+
+func (*fakeJournaldCmdJSONSeq) StdoutPipe() (io.ReadCloser, error) {
+	// Prefix the record with the RFC 7464 Record Separator (0x1E)
+	response := "\x1e" + journaldTestResponse
+	reader := bytes.NewReader([]byte(response))
+	return io.NopCloser(reader), nil
+}
+
+type fakeJournaldCmdJSONSeqWithNewline struct {
+	fakeJournaldCmd
+}
+
+func (*fakeJournaldCmdJSONSeqWithNewline) StdoutPipe() (io.ReadCloser, error) {
+	// First record: a JSON entry where the _SELINUX_CONTEXT field contains a
+	// literal (unescaped) newline byte, as can happen with some journald versions.
+	// With newline-based reading this would be split into two unparseable fragments.
+	// With RS-based reading the full record is read as one unit; parsing still fails
+	// because the JSON is technically invalid, so a warning is logged and the entry
+	// is skipped. The second valid record must still be received.
+	invalidEntry := "\x1e{ \"_SELINUX_CONTEXT\": \"unconfined\n\", \"__REALTIME_TIMESTAMP\": \"1587047866229555\", \"__CURSOR\": \"cursor-invalid\" }\n"
+	// Second record: a well-formed json-seq entry.
+	validEntry := "\x1e" + journaldTestResponse
+	reader := bytes.NewReader([]byte(invalidEntry + validEntry))
+	return io.NopCloser(reader), nil
+}
+
+type fakeJournaldCmdJSONWithNewline struct {
+	fakeJournaldCmd
+}
+
+func (*fakeJournaldCmdJSONWithNewline) StdoutPipe() (io.ReadCloser, error) {
+	// Entry where _SELINUX_CONTEXT contains a literal (unescaped) newline byte.
+	// In plain json format, ReadBytes('\n') splits this at the embedded newline,
+	// producing two fragments that both fail to parse. The entry is lost.
+	// A second valid entry follows to confirm processing continues.
+	invalidEntry := "{ \"_SELINUX_CONTEXT\": \"unconfined\n\", \"__REALTIME_TIMESTAMP\": \"1587047866229555\", \"__CURSOR\": \"cursor-invalid\" }\n"
+	validEntry := journaldTestResponse
+	reader := bytes.NewReader([]byte(invalidEntry + validEntry))
+	return io.NopCloser(reader), nil
 }
 
 func TestInputJournald(t *testing.T) {
@@ -126,6 +171,125 @@ func TestInputJournald(t *testing.T) {
 	}
 }
 
+func TestInputJournaldJSONSeq(t *testing.T) {
+	cfg := NewConfigWithID("my_journald_input")
+	cfg.OutputIDs = []string{"output"}
+	cfg.OutputFormat = OutputFormatJSONSeq
+
+	set := componenttest.NewNopTelemetrySettings()
+	op, err := cfg.Build(set)
+	require.NoError(t, err)
+
+	mockOutput := testutil.NewMockOperator("output")
+	received := make(chan *entry.Entry)
+	mockOutput.On("Process", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		received <- args.Get(1).(*entry.Entry)
+	}).Return(nil)
+
+	err = op.SetOutputs([]operator.Operator{mockOutput})
+	require.NoError(t, err)
+
+	op.(*Input).newCmd = func(_ context.Context, _ []byte) cmd {
+		return &fakeJournaldCmdJSONSeq{}
+	}
+
+	require.NoError(t, op.Start(testutil.NewUnscopedMockPersister()))
+	defer func() {
+		require.NoError(t, op.Stop())
+	}()
+
+	select {
+	case e := <-received:
+		// Verify the RS prefix was stripped and the entry was correctly parsed,
+		// including a field whose value contains a JSON-escaped newline character.
+		require.Equal(t, "run-docker-netns-4f76d707d45f.mount: Succeeded.", e.Body.(map[string]any)["MESSAGE"])
+		require.Equal(t, "unconfined\n", e.Body.(map[string]any)["_SELINUX_CONTEXT"])
+		require.Equal(t, "s=b1e713b587ae4001a9ca482c4b12c005;i=1eed30;b=c4fa36de06824d21835c05ff80c54468;m=9f9d630205;t=5a369604ee333;x=16c2d4fd4fdb7c36", e.Body.(map[string]any)["__CURSOR"])
+	case <-time.After(time.Second):
+		require.FailNow(t, "Timed out waiting for entry to be read")
+	}
+}
+
+func TestInputJournaldJSONSeqEmbeddedNewline(t *testing.T) {
+	cfg := NewConfigWithID("my_journald_input")
+	cfg.OutputIDs = []string{"output"}
+	cfg.OutputFormat = OutputFormatJSONSeq
+
+	set := componenttest.NewNopTelemetrySettings()
+	op, err := cfg.Build(set)
+	require.NoError(t, err)
+
+	mockOutput := testutil.NewMockOperator("output")
+	received := make(chan *entry.Entry)
+	mockOutput.On("Process", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		received <- args.Get(1).(*entry.Entry)
+	}).Return(nil)
+
+	err = op.SetOutputs([]operator.Operator{mockOutput})
+	require.NoError(t, err)
+
+	op.(*Input).newCmd = func(_ context.Context, _ []byte) cmd {
+		return &fakeJournaldCmdJSONSeqWithNewline{}
+	}
+
+	require.NoError(t, op.Start(testutil.NewUnscopedMockPersister()))
+	defer func() {
+		require.NoError(t, op.Stop())
+	}()
+
+	// The first record has a literal unescaped newline in the JSON text, making
+	// it invalid JSON. The RS-based reader reads the full record across the newline
+	// boundary; parsing fails and a warning is logged. The second valid record
+	// must still be received, proving error recovery works correctly.
+	select {
+	case e := <-received:
+		require.Equal(t, "run-docker-netns-4f76d707d45f.mount: Succeeded.", e.Body.(map[string]any)["MESSAGE"])
+	case <-time.After(time.Second):
+		require.FailNow(t, "Timed out waiting for entry to be read")
+	}
+}
+
+func TestInputJournaldJSONEmbeddedNewline(t *testing.T) {
+	cfg := NewConfigWithID("my_journald_input")
+	cfg.OutputIDs = []string{"output"}
+	// Default json format — newline-delimited reading.
+
+	set := componenttest.NewNopTelemetrySettings()
+	op, err := cfg.Build(set)
+	require.NoError(t, err)
+
+	mockOutput := testutil.NewMockOperator("output")
+	received := make(chan *entry.Entry)
+	mockOutput.On("Process", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		received <- args.Get(1).(*entry.Entry)
+	}).Return(nil)
+
+	err = op.SetOutputs([]operator.Operator{mockOutput})
+	require.NoError(t, err)
+
+	op.(*Input).newCmd = func(_ context.Context, _ []byte) cmd {
+		return &fakeJournaldCmdJSONWithNewline{}
+	}
+
+	require.NoError(t, op.Start(testutil.NewUnscopedMockPersister()))
+	defer func() {
+		require.NoError(t, op.Stop())
+	}()
+
+	// With json (newline-delimited) format, the literal newline in _SELINUX_CONTEXT
+	// causes ReadBytes('\n') to split the JSON into two unparseable fragments.
+	// Both fragments fail to parse and the entry with cursor "cursor-invalid" is lost.
+	// The second valid entry must still be received.
+	select {
+	case e := <-received:
+		require.Equal(t, "run-docker-netns-4f76d707d45f.mount: Succeeded.", e.Body.(map[string]any)["MESSAGE"])
+		// The broken entry must not have been delivered.
+		require.NotEqual(t, "cursor-invalid", e.Body.(map[string]any)["__CURSOR"])
+	case <-time.After(time.Second):
+		require.FailNow(t, "Timed out waiting for entry to be read")
+	}
+}
+
 func TestBuildConfigArgs(t *testing.T) {
 	testCases := []struct {
 		Name          string
@@ -137,6 +301,27 @@ func TestBuildConfigArgs(t *testing.T) {
 			Name:     "empty config",
 			Config:   func(_ *Config) {},
 			Expected: []string{"--utc", "--output=json", "--follow", "--priority", "info"},
+		},
+		{
+			Name: "output_format json",
+			Config: func(cfg *Config) {
+				cfg.OutputFormat = OutputFormatJSON
+			},
+			Expected: []string{"--utc", "--output=json", "--follow", "--priority", "info"},
+		},
+		{
+			Name: "output_format json-seq",
+			Config: func(cfg *Config) {
+				cfg.OutputFormat = OutputFormatJSONSeq
+			},
+			Expected: []string{"--utc", "--output=json-seq", "--follow", "--priority", "info"},
+		},
+		{
+			Name: "invalid output_format",
+			Config: func(cfg *Config) {
+				cfg.OutputFormat = "invalid"
+			},
+			ExpectedError: "invalid value 'invalid' for parameter 'output_format'",
 		},
 		{
 			Name: "units",
@@ -366,6 +551,13 @@ func TestConfigValidation(t *testing.T) {
 				cfg.StartAt = "middle"
 			},
 			ExpectedError: "invalid value 'middle' for parameter 'start_at'",
+		},
+		{
+			Name: "invalid output_format",
+			Config: func(cfg *Config) {
+				cfg.OutputFormat = "json-pretty"
+			},
+			ExpectedError: "invalid value 'json-pretty' for parameter 'output_format'",
 		},
 	}
 

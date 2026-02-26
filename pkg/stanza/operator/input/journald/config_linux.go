@@ -50,6 +50,7 @@ func (c Config) Build(set component.TelemetrySettings) (operator.Operator, error
 		InputOperator:       inputOperator,
 		newCmd:              newCmdFunc,
 		convertMessageBytes: c.ConvertMessageBytes,
+		outputFormat:        c.OutputFormat,
 	}, nil
 }
 
@@ -81,6 +82,12 @@ func (c Config) validate() error {
 		return errors.New("'journalctl_path' must be non-whitespace")
 	}
 
+	switch c.OutputFormat {
+	case OutputFormatJSON, OutputFormatJSONSeq:
+	default:
+		return fmt.Errorf("invalid value '%s' for parameter 'output_format', must be '%s' or '%s'", c.OutputFormat, OutputFormatJSON, OutputFormatJSONSeq)
+	}
+
 	return nil
 }
 
@@ -88,9 +95,9 @@ func (c Config) buildArgs() ([]string, error) {
 	args := make([]string, 0, 10)
 
 	args = append(args,
-		"--utc",         // Export logs in UTC time
-		"--output=json", // Export logs as JSON
-		"--follow",      // Continue watching logs until cancelled
+		"--utc",                             // Export logs in UTC time
+		"--output="+c.OutputFormat,          // Export logs as JSON or JSON-seq
+		"--follow",                          // Continue watching logs until cancelled
 	)
 
 	if c.StartAt == "beginning" {

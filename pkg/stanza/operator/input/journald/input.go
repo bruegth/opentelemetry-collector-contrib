@@ -7,6 +7,7 @@ package journald // import "github.com/open-telemetry/opentelemetry-collector-co
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ type Input struct {
 
 	persister           operator.Persister
 	convertMessageBytes bool
+	outputFormat        string
 	cancel              context.CancelFunc
 	wg                  sync.WaitGroup
 	errChan             chan error
@@ -169,25 +171,60 @@ func (operator *Input) runJournalctl(ctx context.Context, jctl *journalctl) erro
 	operator.wg.Go(func() {
 		stdoutBuf := bufio.NewReader(jctl.stdout)
 
-		for {
-			line, err := stdoutBuf.ReadBytes('\n')
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					operator.Logger().Error("Received error reading from journalctl stdout", zap.Error(err))
+		if operator.outputFormat == OutputFormatJSONSeq {
+			// json-seq format (RFC 7464): records are delimited by ASCII Record
+			// Separator (RS, 0x1E) characters rather than newlines. Reading until
+			// the next RS correctly handles field values that contain literal
+			// newline bytes, which would otherwise break newline-delimited parsing.
+			for {
+				chunk, err := stdoutBuf.ReadBytes(0x1e)
+				// Strip the trailing RS delimiter and surrounding whitespace so
+				// we can parse the JSON. Do this before the error check so that
+				// the last record at EOF (which has no trailing RS) is also handled.
+				if len(chunk) > 0 && chunk[len(chunk)-1] == 0x1e {
+					chunk = chunk[:len(chunk)-1]
 				}
-				return
+				line := bytes.TrimSpace(chunk)
+				if len(line) > 0 {
+					entry, cursor, parseErr := operator.parseJournalEntry(line)
+					if parseErr != nil {
+						operator.Logger().Warn("Failed to parse journal entry", zap.Error(parseErr))
+					} else {
+						if setErr := operator.persister.Set(ctx, lastReadCursorKey, []byte(cursor)); setErr != nil {
+							operator.Logger().Warn("Failed to set offset", zap.Error(setErr))
+						}
+						if writeErr := operator.Write(ctx, entry); writeErr != nil {
+							operator.Logger().Error("failed to write entry", zap.Error(writeErr))
+						}
+					}
+				}
+				if err != nil {
+					if !errors.Is(err, io.EOF) {
+						operator.Logger().Error("Received error reading from journalctl stdout", zap.Error(err))
+					}
+					return
+				}
 			}
-
-			entry, cursor, err := operator.parseJournalEntry(line)
-			if err != nil {
-				operator.Logger().Warn("Failed to parse journal entry", zap.Error(err))
-				continue
-			}
-			if err = operator.persister.Set(ctx, lastReadCursorKey, []byte(cursor)); err != nil {
-				operator.Logger().Warn("Failed to set offset", zap.Error(err))
-			}
-			if err = operator.Write(ctx, entry); err != nil {
-				operator.Logger().Error("failed to write entry", zap.Error(err))
+		} else {
+			for {
+				line, err := stdoutBuf.ReadBytes('\n')
+				if err != nil {
+					if !errors.Is(err, io.EOF) {
+						operator.Logger().Error("Received error reading from journalctl stdout", zap.Error(err))
+					}
+					return
+				}
+				entry, cursor, err := operator.parseJournalEntry(line)
+				if err != nil {
+					operator.Logger().Warn("Failed to parse journal entry", zap.Error(err))
+					continue
+				}
+				if err = operator.persister.Set(ctx, lastReadCursorKey, []byte(cursor)); err != nil {
+					operator.Logger().Warn("Failed to set offset", zap.Error(err))
+				}
+				if err = operator.Write(ctx, entry); err != nil {
+					operator.Logger().Error("failed to write entry", zap.Error(err))
+				}
 			}
 		}
 	})

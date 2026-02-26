@@ -9,6 +9,14 @@ import (
 
 const operatorType = "journald_input"
 
+// OutputFormatJSON is the default journalctl JSON output format.
+const OutputFormatJSON = "json"
+
+// OutputFormatJSONSeq is the RFC 7464 JSON Text Sequences output format.
+// Each record is prefixed with an ASCII Record Separator (0x1E) character,
+// which avoids issues with field values that contain literal newlines.
+const OutputFormatJSONSeq = "json-seq"
+
 // NewConfig creates a new input config with default values
 func NewConfig() *Config {
 	return NewConfigWithID(operatorType)
@@ -21,6 +29,7 @@ func NewConfigWithID(operatorID string) *Config {
 		StartAt:        "end",
 		Priority:       "info",
 		JournalctlPath: "journalctl",
+		OutputFormat:   OutputFormatJSON,
 	}
 }
 
@@ -43,6 +52,7 @@ type Config struct {
 	Namespace           string        `mapstructure:"namespace,omitempty"`
 	ConvertMessageBytes bool          `mapstructure:"convert_message_bytes,omitempty"`
 	Merge               bool          `mapstructure:"merge,omitempty"`
+	OutputFormat        string        `mapstructure:"output_format,omitempty"`
 }
 
 type MatchConfig map[string]string
