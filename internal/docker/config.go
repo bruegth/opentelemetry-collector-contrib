@@ -32,9 +32,8 @@ type Config struct {
 
 	// StreamStats enables a persistent streaming connection per container to collect stats.
 	// When true, each container maintains an open Docker stats stream and the scraper reads
-	// from the cached latest value, which improves CPU utilisation accuracy by providing
-	// pre_cpu_stats delta data.  When false (default), a new connection is opened and closed
-	// on every scrape cycle, matching the original behaviour.
+	// from the cached latest value, which reduces connection overhead.  When false (default),
+	// a new connection is opened and closed on every scrape cycle, matching the original behavior.
 	StreamStats bool `mapstructure:"stream_stats"`
 }
 
