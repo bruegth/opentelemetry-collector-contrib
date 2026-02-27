@@ -29,6 +29,13 @@ type Config struct {
 	// Docker client API version. If empty, the client will auto-negotiate
 	// the API version with the Docker daemon using version negotiation.
 	DockerAPIVersion string `mapstructure:"api_version"`
+
+	// StreamStats enables a persistent streaming connection per container to collect stats.
+	// When true, each container maintains an open Docker stats stream and the scraper reads
+	// from the cached latest value, which improves CPU utilisation accuracy by providing
+	// pre_cpu_stats delta data.  When false (default), a new connection is opened and closed
+	// on every scrape cycle, matching the original behaviour.
+	StreamStats bool `mapstructure:"stream_stats"`
 }
 
 func (config *Config) Unmarshal(conf *confmap.Conf) error {
