@@ -245,13 +245,9 @@ func (dc *Client) startContainerStream(ctx context.Context, containerID string) 
 // Reconnects automatically on transient errors. Stops when ctx is cancelled.
 func (dc *Client) runStatsStream(ctx context.Context, containerID string) {
 	for {
-		if ctx.Err() != nil {
-			return
-		}
-
 		resp, err := dc.client.ContainerStats(ctx, containerID, true)
 		if err != nil {
-			if ctx.Err() != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return
 			}
 			if cerrdefs.IsNotFound(err) {
@@ -280,9 +276,7 @@ func (dc *Client) runStatsStream(ctx context.Context, containerID string) {
 			var stats ctypes.StatsResponse
 			if err := decoder.Decode(&stats); err != nil {
 				resp.Body.Close()
-				if ctx.Err() != nil {
-					return
-				}
+
 				if !errors.Is(err, io.EOF) {
 					dc.logger.Warn(
 						"Error reading stats stream, reconnecting",
